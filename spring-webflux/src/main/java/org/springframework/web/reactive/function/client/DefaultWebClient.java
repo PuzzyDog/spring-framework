@@ -59,6 +59,7 @@ import org.springframework.web.util.UriBuilderFactory;
  * Default implementation of {@link WebClient}.
  *
  * @author Rossen Stoyanchev
+ * @author Brian Clozel
  * @since 5.0
  */
 class DefaultWebClient implements WebClient {
@@ -79,17 +80,21 @@ class DefaultWebClient implements WebClient {
 	@Nullable
 	private final MultiValueMap<String, String> defaultCookies;
 
+	@Nullable
+	private final Consumer<RequestHeadersSpec<?>> defaultRequest;
+
 	private final DefaultWebClientBuilder builder;
 
 
 	DefaultWebClient(ExchangeFunction exchangeFunction, @Nullable UriBuilderFactory factory,
 			@Nullable HttpHeaders defaultHeaders, @Nullable MultiValueMap<String, String> defaultCookies,
-			DefaultWebClientBuilder builder) {
+			@Nullable Consumer<RequestHeadersSpec<?>> defaultRequest, DefaultWebClientBuilder builder) {
 
 		this.exchangeFunction = exchangeFunction;
 		this.uriBuilderFactory = (factory != null ? factory : new DefaultUriBuilderFactory());
 		this.defaultHeaders = defaultHeaders;
 		this.defaultCookies = defaultCookies;
+		this.defaultRequest = defaultRequest;
 		this.builder = builder;
 	}
 
@@ -317,6 +322,9 @@ class DefaultWebClient implements WebClient {
 		}
 
 		private ClientRequest.Builder initRequestBuilder() {
+			if (defaultRequest != null) {
+				defaultRequest.accept(this);
+			}
 			URI uri = (this.uri != null ? this.uri : uriBuilderFactory.expand(""));
 			return ClientRequest.create(this.httpMethod, uri)
 					.headers(headers -> headers.addAll(initHeaders()))
@@ -333,27 +341,23 @@ class DefaultWebClient implements WebClient {
 			}
 			else {
 				HttpHeaders result = new HttpHeaders();
+				result.putAll(defaultHeaders);
 				result.putAll(this.headers);
-				defaultHeaders.forEach((name, values) -> {
-					if (!this.headers.containsKey(name)) {
-						values.forEach(value -> result.add(name, value));
-					}
-				});
 				return result;
 			}
 		}
 
 		private MultiValueMap<String, String> initCookies() {
 			if (CollectionUtils.isEmpty(this.cookies)) {
-				return (defaultCookies != null ? defaultCookies : new LinkedMultiValueMap<>(0));
+				return (defaultCookies != null ? defaultCookies : new LinkedMultiValueMap<>());
 			}
 			else if (CollectionUtils.isEmpty(defaultCookies)) {
 				return this.cookies;
 			}
 			else {
 				MultiValueMap<String, String> result = new LinkedMultiValueMap<>();
+				result.putAll(defaultCookies);
 				result.putAll(this.cookies);
-				defaultCookies.forEach(result::putIfAbsent);
 				return result;
 			}
 		}
@@ -372,7 +376,7 @@ class DefaultWebClient implements WebClient {
 
 		private final Mono<ClientResponse> responseMono;
 
-		private List<StatusHandler> statusHandlers = new ArrayList<>(1);
+		private final List<StatusHandler> statusHandlers = new ArrayList<>(1);
 
 		DefaultResponseSpec(Mono<ClientResponse> responseMono) {
 			this.responseMono = responseMono;
@@ -432,13 +436,17 @@ class DefaultWebClient implements WebClient {
 
 		private <T extends Publisher<?>> T bodyToPublisher(ClientResponse response,
 				T bodyPublisher, Function<Mono<? extends Throwable>, T> errorFunction) {
-
-			return this.statusHandlers.stream()
-					.filter(statusHandler -> statusHandler.test(response.statusCode()))
-					.findFirst()
-					.map(statusHandler -> statusHandler.apply(response))
-					.map(errorFunction::apply)
-					.orElse(bodyPublisher);
+			if (HttpStatus.resolve(response.rawStatusCode()) != null) {
+				return this.statusHandlers.stream()
+						.filter(statusHandler -> statusHandler.test(response.statusCode()))
+						.findFirst()
+						.map(statusHandler -> statusHandler.apply(response))
+						.map(errorFunction::apply)
+						.orElse(bodyPublisher);
+			}
+			else {
+				return errorFunction.apply(createResponseException(response));
+			}
 		}
 
 		private static Mono<WebClientResponseException> createResponseException(ClientResponse response) {
@@ -451,18 +459,24 @@ class DefaultWebClient implements WebClient {
 					})
 					.defaultIfEmpty(new byte[0])
 					.map(bodyBytes -> {
-						String msg = String.format("ClientResponse has erroneous status code: %d %s", response.statusCode().value(),
-								response.statusCode().getReasonPhrase());
 						Charset charset = response.headers().contentType()
 								.map(MimeType::getCharset)
 								.orElse(StandardCharsets.ISO_8859_1);
-						return new WebClientResponseException(msg,
-								response.statusCode().value(),
-								response.statusCode().getReasonPhrase(),
-								response.headers().asHttpHeaders(),
-								bodyBytes,
-								charset
-								);
+						if (HttpStatus.resolve(response.rawStatusCode()) != null) {
+							return WebClientResponseException.create(
+									response.statusCode().value(),
+									response.statusCode().getReasonPhrase(),
+									response.headers().asHttpHeaders(),
+									bodyBytes,
+									charset);
+						}
+						else {
+							return new UnknownHttpStatusCodeException(
+									response.rawStatusCode(),
+									response.headers().asHttpHeaders(),
+									bodyBytes,
+									charset);
+						}
 					});
 		}
 

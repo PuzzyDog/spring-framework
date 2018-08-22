@@ -29,6 +29,7 @@ import org.reactivestreams.Publisher;
 import reactor.core.publisher.Mono;
 
 import org.springframework.core.ResolvableType;
+import org.springframework.core.codec.Hints;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.http.MediaType;
 import org.springframework.http.ReactiveHttpOutputMessage;
@@ -130,8 +131,10 @@ public class FormHttpMessageWriter extends LoggingCodecSupport
 		Assert.notNull(charset, "No charset"); // should never occur
 
 		return Mono.from(inputStream).flatMap(form -> {
-			if (shouldLogRequestDetails()) {
-				logger.debug("Encoding " + form);
+			if (logger.isDebugEnabled()) {
+				String details = isEnableLoggingRequestDetails() ?
+						form.toString() : "form fields " + form.keySet() + " (content masked)";
+				logger.debug(Hints.getLogPrefix(hints) + "Writing " + details);
 			}
 			String value = serializeForm(form, charset);
 			ByteBuffer byteBuffer = charset.encode(value);

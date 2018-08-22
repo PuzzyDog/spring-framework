@@ -203,7 +203,7 @@ public class HibernateTransactionManager extends AbstractPlatformTransactionMana
 	 * @see org.springframework.jdbc.core.JdbcTemplate
 	 */
 	public void setDataSource(@Nullable DataSource dataSource) {
-		if (dataSource != null && dataSource instanceof TransactionAwareDataSourceProxy) {
+		if (dataSource instanceof TransactionAwareDataSourceProxy) {
 			// If we got a TransactionAwareDataSourceProxy, we need to perform transactions
 			// for its underlying target DataSource, else data access code won't see
 			// properly exposed transactions (i.e. transactions for the target DataSource).
@@ -374,8 +374,8 @@ public class HibernateTransactionManager extends AbstractPlatformTransactionMana
 			DataSource sfds = SessionFactoryUtils.getDataSource(getSessionFactory());
 			if (sfds != null) {
 				// Use the SessionFactory's DataSource for exposing transactions to JDBC code.
-				if (logger.isInfoEnabled()) {
-					logger.info("Using DataSource [" + sfds +
+				if (logger.isDebugEnabled()) {
+					logger.debug("Using DataSource [" + sfds +
 							"] of Hibernate SessionFactory for HibernateTransactionManager");
 				}
 				setDataSource(sfds);
@@ -495,6 +495,8 @@ public class HibernateTransactionManager extends AbstractPlatformTransactionMana
 			if (definition.isReadOnly() && txObject.isNewSession()) {
 				// Just set to MANUAL in case of a new Session for this transaction.
 				session.setFlushMode(FlushMode.MANUAL);
+				// As of 5.1, we're also setting Hibernate's read-only entity mode by default.
+				session.setDefaultReadOnly(true);
 			}
 
 			if (!definition.isReadOnly() && !txObject.isNewSession()) {

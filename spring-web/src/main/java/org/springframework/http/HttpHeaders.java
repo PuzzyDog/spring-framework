@@ -20,6 +20,8 @@ import java.io.Serializable;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.Charset;
+import java.nio.charset.CharsetEncoder;
+import java.nio.charset.StandardCharsets;
 import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
 import java.time.Instant;
@@ -28,6 +30,7 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.EnumSet;
@@ -75,7 +78,7 @@ public class HttpHeaders implements MultiValueMap<String, String>, Serializable 
 	/**
 	 * The empty {@code HttpHeaders} instance (immutable).
 	 */
-	public static final HttpHeaders EMPTY = new HttpHeaders(new LinkedHashMap<>(0), true);
+	public static final HttpHeaders EMPTY = new HttpHeaders(new LinkedHashMap<>(), true);
 	/**
 	 * The HTTP {@code Accept} header field name.
 	 * @see <a href="http://tools.ietf.org/html/rfc7231#section-5.3.2">Section 5.3.2 of RFC 7231</a>
@@ -706,6 +709,65 @@ public class HttpHeaders implements MultiValueMap<String, String>, Serializable 
 	}
 
 	/**
+	 * Set the value of the {@linkplain #AUTHORIZATION Authorization} header to
+	 * Basic Authentication based on the given username and password.
+	 * <p>Note that Basic Authentication only supports characters in the
+	 * {@link StandardCharsets#ISO_8859_1 ISO-8859-1} character set.
+	 * @param username the username
+	 * @param password the password
+	 * @throws IllegalArgumentException if either {@code user} or
+	 * {@code password} contain characters that cannot be encoded to ISO-8859-1.
+	 * @since 5.1
+	 * @see <a href="https://tools.ietf.org/html/rfc7617">RFC 7617</a>
+	 */
+	public void setBasicAuth(String username, String password) {
+		setBasicAuth(username, password, null);
+	}
+
+	/**
+	 * Set the value of the {@linkplain #AUTHORIZATION Authorization} header to
+	 * Basic Authentication based on the given username and password.
+	 * @param username the username
+	 * @param password the password
+	 * @param charset the charset to use to convert the credentials into an octet
+	 * sequence. Defaults to {@linkplain StandardCharsets#ISO_8859_1 ISO-8859-1}
+	 * @throws IllegalArgumentException if either {@code user} or
+	 * {@code password} contain characters that cannot be encoded to ISO-8859-1.
+	 * @since 5.1
+	 * @see <a href="https://tools.ietf.org/html/rfc7617">RFC 7617</a>
+	 */
+	public void setBasicAuth(String username, String password, @Nullable Charset charset) {
+		Assert.notNull(username, "Username must not be null");
+		Assert.notNull(password, "Password must not be null");
+		if (charset == null) {
+			charset = StandardCharsets.ISO_8859_1;
+		}
+
+		CharsetEncoder encoder = charset.newEncoder();
+		if (!encoder.canEncode(username) || !encoder.canEncode(password)) {
+			throw new IllegalArgumentException(
+					"Username or password contains characters that cannot be encoded to " +
+			charset.displayName());
+		}
+
+		String credentialsString = username + ":" + password;
+		byte[] encodedBytes = Base64.getEncoder().encode(credentialsString.getBytes(charset));
+		String encodedCredentials = new String(encodedBytes, charset);
+		set(AUTHORIZATION, "Basic " + encodedCredentials);
+	}
+
+	/**
+	 * Set the value of the {@linkplain #AUTHORIZATION Authorization} header to
+	 * the given Bearer token.
+	 * @param token the Base64 encoded token
+	 * @since 5.1
+	 * @see <a href="https://tools.ietf.org/html/rfc6750">RFC 6750</a>
+	 */
+	public void setBearerAuth(String token) {
+		set(AUTHORIZATION, "Bearer " + token);
+	}
+
+	/**
 	 * Set a configured {@link CacheControl} instance as the
 	 * new value of the {@code Cache-Control} header.
 	 * @since 5.0.5
@@ -1281,7 +1343,7 @@ public class HttpHeaders implements MultiValueMap<String, String>, Serializable 
 	 * {@link IllegalArgumentException} ({@code true}) or rather return {@code null}
 	 * in that case ({@code false})
 	 * @return the parsed date header, or {@code null} if none (or invalid)
- 	 */
+	 */
 	@Nullable
 	private ZonedDateTime getFirstZonedDateTime(String headerName, boolean rejectInvalid) {
 		String headerValue = getFirst(headerName);

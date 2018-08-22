@@ -16,7 +16,6 @@
 
 package org.springframework.web.reactive.result.method.annotation;
 
-import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -27,6 +26,7 @@ import org.springframework.core.MethodParameter;
 import org.springframework.core.ReactiveAdapter;
 import org.springframework.core.ReactiveAdapterRegistry;
 import org.springframework.core.ResolvableType;
+import org.springframework.core.codec.Hints;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.HttpMessageWriter;
 import org.springframework.http.server.reactive.ServerHttpRequest;
@@ -123,7 +123,7 @@ public abstract class AbstractMessageWriterResultHandler extends HandlerResultHa
 		ResolvableType elementType;
 		if (adapter != null) {
 			publisher = adapter.toPublisher(body);
-			ResolvableType genericType = bodyType.getGeneric(0);
+			ResolvableType genericType = bodyType.getGeneric();
 			elementType = getElementType(adapter, genericType);
 		}
 		else {
@@ -140,13 +140,15 @@ public abstract class AbstractMessageWriterResultHandler extends HandlerResultHa
 		ServerHttpResponse response = exchange.getResponse();
 		MediaType bestMediaType = selectMediaType(exchange, () -> getMediaTypesFor(elementType));
 		if (bestMediaType != null) {
+			String logPrefix = exchange.getLogPrefix();
 			if (logger.isDebugEnabled()) {
-				logger.debug((publisher instanceof Mono ? "0..1" : "0..N") + " [" + elementType + "]");
+				logger.debug(logPrefix +
+						(publisher instanceof Mono ? "0..1" : "0..N") + " [" + elementType + "]");
 			}
 			for (HttpMessageWriter<?> writer : getMessageWriters()) {
 				if (writer.canWrite(elementType, bestMediaType)) {
-					return writer.write((Publisher) publisher, actualType, elementType,
-							bestMediaType, request, response, Collections.emptyMap());
+					return writer.write((Publisher) publisher, actualType, elementType, bestMediaType,
+							request, response, Hints.from(Hints.LOG_PREFIX_HINT, logPrefix));
 				}
 			}
 		}

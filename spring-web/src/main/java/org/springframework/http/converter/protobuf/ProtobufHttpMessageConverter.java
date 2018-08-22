@@ -25,7 +25,7 @@ import java.lang.reflect.Method;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.Map;
 
 import com.google.protobuf.CodedOutputStream;
 import com.google.protobuf.ExtensionRegistry;
@@ -39,11 +39,13 @@ import org.springframework.http.HttpInputMessage;
 import org.springframework.http.HttpOutputMessage;
 import org.springframework.http.MediaType;
 import org.springframework.http.converter.AbstractHttpMessageConverter;
+import org.springframework.http.converter.HttpMessageConversionException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.http.converter.HttpMessageNotWritableException;
 import org.springframework.lang.Nullable;
 import org.springframework.util.Assert;
 import org.springframework.util.ClassUtils;
+import org.springframework.util.ConcurrentReferenceHashMap;
 
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.http.MediaType.APPLICATION_XML;
@@ -51,8 +53,9 @@ import static org.springframework.http.MediaType.TEXT_HTML;
 import static org.springframework.http.MediaType.TEXT_PLAIN;
 
 /**
- * An {@code HttpMessageConverter} that reads and writes {@link com.google.protobuf.Message com.google.protobuf.Messages}
- * using <a href="https://developers.google.com/protocol-buffers/">Google Protocol Buffers</a>.
+ * An {@code HttpMessageConverter} that reads and writes
+ * {@link com.google.protobuf.Message com.google.protobuf.Messages} using
+ * <a href="https://developers.google.com/protocol-buffers/">Google Protocol Buffers</a>.
  *
  * <p>To generate {@code Message} Java classes, you need to install the {@code protoc} binary.
  *
@@ -74,6 +77,7 @@ import static org.springframework.http.MediaType.TEXT_PLAIN;
  * @author Alex Antonov
  * @author Brian Clozel
  * @author Juergen Hoeller
+ * @author Sebastien Deleuze
  * @since 4.1
  * @see FormatFactory
  * @see JsonFormat
@@ -102,9 +106,9 @@ public class ProtobufHttpMessageConverter extends AbstractHttpMessageConverter<M
 	public static final String X_PROTOBUF_MESSAGE_HEADER = "X-Protobuf-Message";
 
 
-	private static final ConcurrentHashMap<Class<?>, Method> methodCache = new ConcurrentHashMap<>();
+	private static final Map<Class<?>, Method> methodCache = new ConcurrentReferenceHashMap<>();
 
-	private final ExtensionRegistry extensionRegistry = ExtensionRegistry.newInstance();
+	final ExtensionRegistry extensionRegistry;
 
 	@Nullable
 	private final ProtobufFormatSupport protobufFormatSupport;
@@ -114,20 +118,34 @@ public class ProtobufHttpMessageConverter extends AbstractHttpMessageConverter<M
 	 * Construct a new {@code ProtobufHttpMessageConverter}.
 	 */
 	public ProtobufHttpMessageConverter() {
-		this(null);
+		this(null, null);
 	}
 
 	/**
 	 * Construct a new {@code ProtobufHttpMessageConverter} with an
 	 * initializer that allows the registration of message extensions.
 	 * @param registryInitializer an initializer for message extensions
+	 * @deprecated as of Spring Framework 5.1, use {@link #ProtobufHttpMessageConverter(ExtensionRegistry)} instead
 	 */
+	@Deprecated
 	public ProtobufHttpMessageConverter(@Nullable ExtensionRegistryInitializer registryInitializer) {
-		this(null, registryInitializer);
+		this(null, null);
+		if (registryInitializer != null) {
+			registryInitializer.initializeExtensionRegistry(this.extensionRegistry);
+		}
+	}
+
+	/**
+	 * Construct a new {@code ProtobufHttpMessageConverter} with a registry that specifies
+	 * protocol message extensions.
+	 * @param extensionRegistry the registry to populate
+	 */
+	public ProtobufHttpMessageConverter(ExtensionRegistry extensionRegistry) {
+		this(null, extensionRegistry);
 	}
 
 	ProtobufHttpMessageConverter(@Nullable ProtobufFormatSupport formatSupport,
-			@Nullable ExtensionRegistryInitializer registryInitializer) {
+			@Nullable ExtensionRegistry extensionRegistry) {
 
 		if (formatSupport != null) {
 			this.protobufFormatSupport = formatSupport;
@@ -142,12 +160,10 @@ public class ProtobufHttpMessageConverter extends AbstractHttpMessageConverter<M
 			this.protobufFormatSupport = null;
 		}
 
-		setSupportedMediaTypes(Arrays.asList((this.protobufFormatSupport != null ?
-				this.protobufFormatSupport.supportedMediaTypes() : new MediaType[] {PROTOBUF, TEXT_PLAIN})));
+		setSupportedMediaTypes(Arrays.asList(this.protobufFormatSupport != null ?
+				this.protobufFormatSupport.supportedMediaTypes() : new MediaType[] {PROTOBUF, TEXT_PLAIN}));
 
-		if (registryInitializer != null) {
-			registryInitializer.initializeExtensionRegistry(this.extensionRegistry);
-		}
+		this.extensionRegistry = (extensionRegistry == null ? ExtensionRegistry.newInstance() : extensionRegistry);
 	}
 
 
@@ -174,25 +190,40 @@ public class ProtobufHttpMessageConverter extends AbstractHttpMessageConverter<M
 			charset = DEFAULT_CHARSET;
 		}
 
+		Message.Builder builder = getMessageBuilder(clazz);
+		if (PROTOBUF.isCompatibleWith(contentType)) {
+			builder.mergeFrom(inputMessage.getBody(), this.extensionRegistry);
+		}
+		else if (TEXT_PLAIN.isCompatibleWith(contentType)) {
+			InputStreamReader reader = new InputStreamReader(inputMessage.getBody(), charset);
+			TextFormat.merge(reader, this.extensionRegistry, builder);
+		}
+		else if (this.protobufFormatSupport != null) {
+			this.protobufFormatSupport.merge(
+					inputMessage.getBody(), charset, contentType, this.extensionRegistry, builder);
+		}
+		return builder.build();
+	}
+
+	/**
+	 * Create a new {@code Message.Builder} instance for the given class.
+	 * <p>This method uses a ConcurrentReferenceHashMap for caching method lookups.
+	 */
+	private Message.Builder getMessageBuilder(Class<? extends Message> clazz) {
 		try {
-			Message.Builder builder = getMessageBuilder(clazz);
-			if (PROTOBUF.isCompatibleWith(contentType)) {
-				builder.mergeFrom(inputMessage.getBody(), this.extensionRegistry);
+			Method method = methodCache.get(clazz);
+			if (method == null) {
+				method = clazz.getMethod("newBuilder");
+				methodCache.put(clazz, method);
 			}
-			else if (TEXT_PLAIN.isCompatibleWith(contentType)) {
-				InputStreamReader reader = new InputStreamReader(inputMessage.getBody(), charset);
-				TextFormat.merge(reader, this.extensionRegistry, builder);
-			}
-			else if (this.protobufFormatSupport != null) {
-				this.protobufFormatSupport.merge(inputMessage.getBody(), charset, contentType,
-						this.extensionRegistry, builder);
-			}
-			return builder.build();
+			return (Message.Builder) method.invoke(clazz);
 		}
 		catch (Exception ex) {
-			throw new HttpMessageNotReadableException("Could not read Protobuf message: " + ex.getMessage(), ex);
+			throw new HttpMessageConversionException(
+					"Invalid Protobuf Message type: no invocable newBuilder() method on " + clazz, ex);
 		}
 	}
+
 
 	@Override
 	protected boolean canWrite(@Nullable MediaType mediaType) {
@@ -245,20 +276,6 @@ public class ProtobufHttpMessageConverter extends AbstractHttpMessageConverter<M
 
 
 	/**
-	 * Create a new {@code Message.Builder} instance for the given class.
-	 * <p>This method uses a ConcurrentHashMap for caching method lookups.
-	 */
-	private static Message.Builder getMessageBuilder(Class<? extends Message> clazz) throws Exception {
-		Method method = methodCache.get(clazz);
-		if (method == null) {
-			method = clazz.getMethod("newBuilder");
-			methodCache.put(clazz, method);
-		}
-		return (Message.Builder) method.invoke(clazz);
-	}
-
-
-	/**
 	 * Protobuf format support.
 	 */
 	interface ProtobufFormatSupport {
@@ -268,11 +285,13 @@ public class ProtobufHttpMessageConverter extends AbstractHttpMessageConverter<M
 		boolean supportsWriteOnly(@Nullable MediaType mediaType);
 
 		void merge(InputStream input, Charset charset, MediaType contentType,
-				ExtensionRegistry extensionRegistry, Message.Builder builder) throws IOException;
+				ExtensionRegistry extensionRegistry, Message.Builder builder)
+				throws IOException, HttpMessageConversionException;
 
 		void print(Message message, OutputStream output, MediaType contentType, Charset charset)
-				throws IOException;
+				throws IOException, HttpMessageConversionException;
 	}
+
 
 	/**
 	 * {@link ProtobufFormatSupport} implementation used when
@@ -305,7 +324,8 @@ public class ProtobufHttpMessageConverter extends AbstractHttpMessageConverter<M
 
 		@Override
 		public void merge(InputStream input, Charset charset, MediaType contentType,
-				ExtensionRegistry extensionRegistry, Message.Builder builder) throws IOException {
+				ExtensionRegistry extensionRegistry, Message.Builder builder)
+				throws IOException, HttpMessageConversionException {
 
 			if (contentType.isCompatibleWith(APPLICATION_JSON)) {
 				this.jsonFormatter.merge(input, charset, extensionRegistry, builder);
@@ -314,13 +334,14 @@ public class ProtobufHttpMessageConverter extends AbstractHttpMessageConverter<M
 				this.xmlFormatter.merge(input, charset, extensionRegistry, builder);
 			}
 			else {
-				throw new IOException("com.google.protobuf.util does not support " + contentType + " format");
+				throw new HttpMessageConversionException(
+						"protobuf-java-format does not support parsing " + contentType);
 			}
 		}
 
 		@Override
 		public void print(Message message, OutputStream output, MediaType contentType, Charset charset)
-				throws IOException {
+				throws IOException, HttpMessageConversionException {
 
 			if (contentType.isCompatibleWith(APPLICATION_JSON)) {
 				this.jsonFormatter.print(message, output, charset);
@@ -332,7 +353,8 @@ public class ProtobufHttpMessageConverter extends AbstractHttpMessageConverter<M
 				this.htmlFormatter.print(message, output, charset);
 			}
 			else {
-				throw new IOException("protobuf-java-format does not support " + contentType + " format");
+				throw new HttpMessageConversionException(
+						"protobuf-java-format does not support printing " + contentType);
 			}
 		}
 	}
@@ -365,20 +387,22 @@ public class ProtobufHttpMessageConverter extends AbstractHttpMessageConverter<M
 
 		@Override
 		public void merge(InputStream input, Charset charset, MediaType contentType,
-				ExtensionRegistry extensionRegistry, Message.Builder builder) throws IOException {
+				ExtensionRegistry extensionRegistry, Message.Builder builder)
+				throws IOException, HttpMessageConversionException {
 
 			if (contentType.isCompatibleWith(APPLICATION_JSON)) {
 				InputStreamReader reader = new InputStreamReader(input, charset);
 				this.parser.merge(reader, builder);
 			}
 			else {
-				throw new IOException("protobuf-java-util does not support " + contentType + " format");
+				throw new HttpMessageConversionException(
+						"protobuf-java-util does not support parsing " + contentType);
 			}
 		}
 
 		@Override
 		public void print(Message message, OutputStream output, MediaType contentType, Charset charset)
-				throws IOException {
+				throws IOException, HttpMessageConversionException {
 
 			if (contentType.isCompatibleWith(APPLICATION_JSON)) {
 				OutputStreamWriter writer = new OutputStreamWriter(output, charset);
@@ -386,7 +410,8 @@ public class ProtobufHttpMessageConverter extends AbstractHttpMessageConverter<M
 				writer.flush();
 			}
 			else {
-				throw new IOException("protobuf-java-util does not support " + contentType + " format");
+				throw new HttpMessageConversionException(
+						"protobuf-java-util does not support printing " + contentType);
 			}
 		}
 	}

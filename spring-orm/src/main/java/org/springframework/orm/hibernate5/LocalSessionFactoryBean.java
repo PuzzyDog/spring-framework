@@ -27,15 +27,19 @@ import org.hibernate.boot.MetadataSources;
 import org.hibernate.boot.model.naming.ImplicitNamingStrategy;
 import org.hibernate.boot.model.naming.PhysicalNamingStrategy;
 import org.hibernate.boot.registry.BootstrapServiceRegistryBuilder;
+import org.hibernate.cache.spi.RegionFactory;
 import org.hibernate.cfg.Configuration;
 import org.hibernate.context.spi.CurrentTenantIdentifierResolver;
 import org.hibernate.engine.jdbc.connections.spi.MultiTenantConnectionProvider;
 import org.hibernate.integrator.spi.Integrator;
 import org.hibernate.service.ServiceRegistry;
 
+import org.springframework.beans.factory.BeanFactory;
+import org.springframework.beans.factory.BeanFactoryAware;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.FactoryBean;
 import org.springframework.beans.factory.InitializingBean;
+import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.context.ResourceLoaderAware;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
@@ -46,6 +50,7 @@ import org.springframework.core.io.support.ResourcePatternUtils;
 import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.core.type.filter.TypeFilter;
 import org.springframework.lang.Nullable;
+import org.springframework.util.ClassUtils;
 
 /**
  * {@link FactoryBean} that creates a Hibernate {@link SessionFactory}. This is the usual
@@ -53,15 +58,24 @@ import org.springframework.lang.Nullable;
  * SessionFactory can then be passed to data access objects via dependency injection.
  *
  * <p>Compatible with Hibernate 5.0/5.1 as well as 5.2/5.3, as of Spring 5.1.
+ * Set up with Hibernate 5.3, {@code LocalSessionFactoryBean} is an immediate alternative
+ * to {@link org.springframework.orm.jpa.LocalContainerEntityManagerFactoryBean} for common
+ * JPA purposes: In particular with Hibernate 5.3, the Hibernate {@code SessionFactory}
+ * will natively expose the JPA {@code EntityManagerFactory} interface as well, and
+ * Hibernate {@code BeanContainer} integration will be registered out of the box.
+ * In combination with {@link HibernateTransactionManager}, this naturally allows for
+ * mixing JPA access code with native Hibernate access code within the same transaction.
  *
  * @author Juergen Hoeller
  * @since 4.2
  * @see #setDataSource
  * @see #setPackagesToScan
+ * @see HibernateTransactionManager
  * @see LocalSessionFactoryBuilder
+ * @see org.springframework.orm.jpa.LocalContainerEntityManagerFactoryBean
  */
 public class LocalSessionFactoryBean extends HibernateExceptionTranslator
-		implements FactoryBean<SessionFactory>, ResourceLoaderAware, InitializingBean, DisposableBean {
+		implements FactoryBean<SessionFactory>, ResourceLoaderAware, BeanFactoryAware, InitializingBean, DisposableBean {
 
 	@Nullable
 	private DataSource dataSource;
@@ -97,16 +111,19 @@ public class LocalSessionFactoryBean extends HibernateExceptionTranslator
 	private Object jtaTransactionManager;
 
 	@Nullable
+	private RegionFactory cacheRegionFactory;
+
+	@Nullable
 	private MultiTenantConnectionProvider multiTenantConnectionProvider;
 
 	@Nullable
 	private CurrentTenantIdentifierResolver currentTenantIdentifierResolver;
 
 	@Nullable
-	private TypeFilter[] entityTypeFilters;
+	private Properties hibernateProperties;
 
 	@Nullable
-	private Properties hibernateProperties;
+	private TypeFilter[] entityTypeFilters;
 
 	@Nullable
 	private Class<?>[] annotatedClasses;
@@ -130,6 +147,9 @@ public class LocalSessionFactoryBean extends HibernateExceptionTranslator
 
 	@Nullable
 	private ResourcePatternResolver resourcePatternResolver;
+
+	@Nullable
+	private ConfigurableListableBeanFactory beanFactory;
 
 	@Nullable
 	private Configuration configuration;
@@ -243,7 +263,7 @@ public class LocalSessionFactoryBean extends HibernateExceptionTranslator
 	}
 
 	/**
-	 * Set a Hibernate 5.0 ImplicitNamingStrategy for the SessionFactory.
+	 * Set a Hibernate 5 {@link ImplicitNamingStrategy} for the SessionFactory.
 	 * @see Configuration#setImplicitNamingStrategy
 	 */
 	public void setImplicitNamingStrategy(ImplicitNamingStrategy implicitNamingStrategy) {
@@ -251,7 +271,7 @@ public class LocalSessionFactoryBean extends HibernateExceptionTranslator
 	}
 
 	/**
-	 * Set a Hibernate 5.0 PhysicalNamingStrategy for the SessionFactory.
+	 * Set a Hibernate 5 {@link PhysicalNamingStrategy} for the SessionFactory.
 	 * @see Configuration#setPhysicalNamingStrategy
 	 */
 	public void setPhysicalNamingStrategy(PhysicalNamingStrategy physicalNamingStrategy) {
@@ -269,6 +289,18 @@ public class LocalSessionFactoryBean extends HibernateExceptionTranslator
 	}
 
 	/**
+	 * Set the Hibernate {@link RegionFactory} to use for the SessionFactory.
+	 * Allows for using a Spring-managed {@code RegionFactory} instance.
+	 * <p>Note: If this is set, the Hibernate settings should not define a
+	 * cache provider to avoid meaningless double configuration.
+	 * @since 5.1
+	 * @see LocalSessionFactoryBuilder#setCacheRegionFactory
+	 */
+	public void setCacheRegionFactory(RegionFactory cacheRegionFactory) {
+		this.cacheRegionFactory = cacheRegionFactory;
+	}
+
+	/**
 	 * Set a {@link MultiTenantConnectionProvider} to be passed on to the SessionFactory.
 	 * @since 4.3
 	 * @see LocalSessionFactoryBuilder#setMultiTenantConnectionProvider
@@ -283,17 +315,6 @@ public class LocalSessionFactoryBean extends HibernateExceptionTranslator
 	 */
 	public void setCurrentTenantIdentifierResolver(CurrentTenantIdentifierResolver currentTenantIdentifierResolver) {
 		this.currentTenantIdentifierResolver = currentTenantIdentifierResolver;
-	}
-
-	/**
-	 * Specify custom type filters for Spring-based scanning for entity classes.
-	 * <p>Default is to search all specified packages for classes annotated with
-	 * {@code @javax.persistence.Entity}, {@code @javax.persistence.Embeddable}
-	 * or {@code @javax.persistence.MappedSuperclass}.
-	 * @see #setPackagesToScan
-	 */
-	public void setEntityTypeFilters(TypeFilter... entityTypeFilters) {
-		this.entityTypeFilters = entityTypeFilters;
 	}
 
 	/**
@@ -316,6 +337,17 @@ public class LocalSessionFactoryBean extends HibernateExceptionTranslator
 			this.hibernateProperties = new Properties();
 		}
 		return this.hibernateProperties;
+	}
+
+	/**
+	 * Specify custom type filters for Spring-based scanning for entity classes.
+	 * <p>Default is to search all specified packages for classes annotated with
+	 * {@code @javax.persistence.Entity}, {@code @javax.persistence.Embeddable}
+	 * or {@code @javax.persistence.MappedSuperclass}.
+	 * @see #setPackagesToScan
+	 */
+	public void setEntityTypeFilters(TypeFilter... entityTypeFilters) {
+		this.entityTypeFilters = entityTypeFilters;
 	}
 
 	/**
@@ -433,6 +465,24 @@ public class LocalSessionFactoryBean extends HibernateExceptionTranslator
 		return this.resourcePatternResolver;
 	}
 
+	/**
+	 * Accept the containing {@link BeanFactory}, registering corresponding Hibernate
+	 * {@link org.hibernate.resource.beans.container.spi.BeanContainer} integration for
+	 * it if possible. This requires a Spring {@link ConfigurableListableBeanFactory}
+	 * and Hibernate 5.3 or higher on the classpath.
+	 * @since 5.1
+	 * @see SpringBeanContainer
+	 * @see LocalSessionFactoryBuilder#setBeanContainer
+	 */
+	@Override
+	public void setBeanFactory(BeanFactory beanFactory) {
+		if (beanFactory instanceof ConfigurableListableBeanFactory &&
+				ClassUtils.isPresent("org.hibernate.resource.beans.container.spi.BeanContainer",
+						getClass().getClassLoader())) {
+			this.beanFactory = (ConfigurableListableBeanFactory) beanFactory;
+		}
+	}
+
 
 	@Override
 	public void afterPropertiesSet() throws IOException {
@@ -508,6 +558,14 @@ public class LocalSessionFactoryBean extends HibernateExceptionTranslator
 			sfb.setJtaTransactionManager(this.jtaTransactionManager);
 		}
 
+		if (this.beanFactory != null) {
+			sfb.setBeanContainer(this.beanFactory);
+		}
+
+		if (this.cacheRegionFactory != null) {
+			sfb.setCacheRegionFactory(this.cacheRegionFactory);
+		}
+
 		if (this.multiTenantConnectionProvider != null) {
 			sfb.setMultiTenantConnectionProvider(this.multiTenantConnectionProvider);
 		}
@@ -516,12 +574,12 @@ public class LocalSessionFactoryBean extends HibernateExceptionTranslator
 			sfb.setCurrentTenantIdentifierResolver(this.currentTenantIdentifierResolver);
 		}
 
-		if (this.entityTypeFilters != null) {
-			sfb.setEntityTypeFilters(this.entityTypeFilters);
-		}
-
 		if (this.hibernateProperties != null) {
 			sfb.addProperties(this.hibernateProperties);
+		}
+
+		if (this.entityTypeFilters != null) {
+			sfb.setEntityTypeFilters(this.entityTypeFilters);
 		}
 
 		if (this.annotatedClasses != null) {

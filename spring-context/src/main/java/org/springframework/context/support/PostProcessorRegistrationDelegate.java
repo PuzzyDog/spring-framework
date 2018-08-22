@@ -20,7 +20,6 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashSet;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Set;
 
@@ -49,7 +48,6 @@ import org.springframework.lang.Nullable;
  */
 final class PostProcessorRegistrationDelegate {
 
-
 	private PostProcessorRegistrationDelegate() {
 	}
 
@@ -62,8 +60,8 @@ final class PostProcessorRegistrationDelegate {
 
 		if (beanFactory instanceof BeanDefinitionRegistry) {
 			BeanDefinitionRegistry registry = (BeanDefinitionRegistry) beanFactory;
-			List<BeanFactoryPostProcessor> regularPostProcessors = new LinkedList<>();
-			List<BeanDefinitionRegistryPostProcessor> registryProcessors = new LinkedList<>();
+			List<BeanFactoryPostProcessor> regularPostProcessors = new ArrayList<>();
+			List<BeanDefinitionRegistryPostProcessor> registryProcessors = new ArrayList<>();
 
 			for (BeanFactoryPostProcessor postProcessor : beanFactoryPostProcessors) {
 				if (postProcessor instanceof BeanDefinitionRegistryPostProcessor) {
@@ -306,7 +304,7 @@ final class PostProcessorRegistrationDelegate {
 	 * BeanPostProcessor instantiation, i.e. when a bean is not eligible for
 	 * getting processed by all BeanPostProcessors.
 	 */
-	private static class BeanPostProcessorChecker implements BeanPostProcessor {
+	private static final class BeanPostProcessorChecker implements BeanPostProcessor {
 
 		private static final Log logger = LogFactory.getLog(BeanPostProcessorChecker.class);
 

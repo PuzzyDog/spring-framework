@@ -25,13 +25,13 @@ import javax.xml.bind.Marshaller;
 import javax.xml.bind.annotation.XmlRootElement;
 import javax.xml.bind.annotation.XmlType;
 
-import org.apache.commons.logging.Log;
 import reactor.core.publisher.Flux;
 
 import org.springframework.core.ResolvableType;
 import org.springframework.core.codec.AbstractSingleValueEncoder;
 import org.springframework.core.codec.CodecException;
 import org.springframework.core.codec.EncodingException;
+import org.springframework.core.codec.Hints;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DataBufferFactory;
 import org.springframework.lang.Nullable;
@@ -40,7 +40,11 @@ import org.springframework.util.MimeType;
 import org.springframework.util.MimeTypeUtils;
 
 /**
- * Encode from {@code Object} stream to a byte stream containing XML elements.
+ * Encode from single value to a byte stream containing XML elements.
+ *
+ * <p>{@link javax.xml.bind.annotation.XmlElements @XmlElements} and
+ * {@link javax.xml.bind.annotation.XmlElement @XmlElement} can be used to specify how
+ * collections should be marshalled.
  *
  * @author Sebastien Deleuze
  * @author Arjen Poutsma
@@ -60,7 +64,7 @@ public class Jaxb2XmlEncoder extends AbstractSingleValueEncoder<Object> {
 	@Override
 	public boolean canEncode(ResolvableType elementType, @Nullable MimeType mimeType) {
 		if (super.canEncode(elementType, mimeType)) {
-			Class<?> outputClass = elementType.resolve(Object.class);
+			Class<?> outputClass = elementType.toClass();
 			return (outputClass.isAnnotationPresent(XmlRootElement.class) ||
 					outputClass.isAnnotationPresent(XmlType.class));
 		}
@@ -74,9 +78,8 @@ public class Jaxb2XmlEncoder extends AbstractSingleValueEncoder<Object> {
 	protected Flux<DataBuffer> encode(Object value, DataBufferFactory dataBufferFactory,
 			ResolvableType type, @Nullable MimeType mimeType, @Nullable Map<String, Object> hints) {
 		try {
-			Log logger = getLogger(hints);
-			if (logger.isDebugEnabled()) {
-				logger.debug("Encoding [" + value + "]");
+			if (logger.isDebugEnabled() && !Hints.isLoggingSuppressed(hints)) {
+				logger.debug(Hints.getLogPrefix(hints) + "Encoding [" + value + "]");
 			}
 			DataBuffer buffer = dataBufferFactory.allocateBuffer(1024);
 			OutputStream outputStream = buffer.asOutputStream();

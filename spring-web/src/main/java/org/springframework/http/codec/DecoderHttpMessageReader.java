@@ -16,16 +16,18 @@
 
 package org.springframework.http.codec;
 
-import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.apache.commons.logging.Log;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import org.springframework.core.ResolvableType;
+import org.springframework.core.codec.AbstractDecoder;
 import org.springframework.core.codec.Decoder;
+import org.springframework.core.codec.Hints;
+import org.springframework.http.HttpLogging;
 import org.springframework.http.HttpMessage;
 import org.springframework.http.MediaType;
 import org.springframework.http.ReactiveHttpInputMessage;
@@ -61,6 +63,16 @@ public class DecoderHttpMessageReader<T> implements HttpMessageReader<T> {
 		Assert.notNull(decoder, "Decoder is required");
 		this.decoder = decoder;
 		this.mediaTypes = MediaType.asMediaTypes(decoder.getDecodableMimeTypes());
+		initLogger(decoder);
+	}
+
+	private void initLogger(Decoder<T> decoder) {
+		if (decoder instanceof AbstractDecoder &&
+				decoder.getClass().getPackage().getName().startsWith("org.springframework.core.codec")) {
+
+			Log logger = HttpLogging.forLog(((AbstractDecoder) decoder).getLogger());
+			((AbstractDecoder) decoder).setLogger(logger);
+		}
 	}
 
 
@@ -114,9 +126,8 @@ public class DecoderHttpMessageReader<T> implements HttpMessageReader<T> {
 	public Flux<T> read(ResolvableType actualType, ResolvableType elementType,
 			ServerHttpRequest request, ServerHttpResponse response, Map<String, Object> hints) {
 
-		Map<String, Object> allHints = new HashMap<>(4);
-		allHints.putAll(getReadHints(actualType, elementType, request, response));
-		allHints.putAll(hints);
+		Map<String, Object> allHints = Hints.merge(hints,
+				getReadHints(actualType, elementType, request, response));
 
 		return read(elementType, request, allHints);
 	}
@@ -125,9 +136,8 @@ public class DecoderHttpMessageReader<T> implements HttpMessageReader<T> {
 	public Mono<T> readMono(ResolvableType actualType, ResolvableType elementType,
 			ServerHttpRequest request, ServerHttpResponse response, Map<String, Object> hints) {
 
-		Map<String, Object> allHints = new HashMap<>(4);
-		allHints.putAll(getReadHints(actualType, elementType, request, response));
-		allHints.putAll(hints);
+		Map<String, Object> allHints = Hints.merge(hints,
+				getReadHints(actualType, elementType, request, response));
 
 		return readMono(elementType, request, allHints);
 	}
@@ -141,10 +151,10 @@ public class DecoderHttpMessageReader<T> implements HttpMessageReader<T> {
 			ResolvableType elementType, ServerHttpRequest request, ServerHttpResponse response) {
 
 		if (this.decoder instanceof HttpMessageDecoder) {
-			HttpMessageDecoder<?> httpDecoder = (HttpMessageDecoder<?>) this.decoder;
-			return httpDecoder.getDecodeHints(actualType, elementType, request, response);
+			HttpMessageDecoder<?> decoder = (HttpMessageDecoder<?>) this.decoder;
+			return decoder.getDecodeHints(actualType, elementType, request, response);
 		}
-		return Collections.emptyMap();
+		return Hints.none();
 	}
 
 }

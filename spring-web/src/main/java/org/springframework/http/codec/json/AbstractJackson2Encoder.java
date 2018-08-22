@@ -33,7 +33,6 @@ import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectWriter;
 import com.fasterxml.jackson.databind.exc.InvalidDefinitionException;
-import org.apache.commons.logging.Log;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -42,6 +41,7 @@ import org.springframework.core.MethodParameter;
 import org.springframework.core.ResolvableType;
 import org.springframework.core.codec.CodecException;
 import org.springframework.core.codec.EncodingException;
+import org.springframework.core.codec.Hints;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DataBufferFactory;
 import org.springframework.http.MediaType;
@@ -100,7 +100,7 @@ public abstract class AbstractJackson2Encoder extends Jackson2CodecSupport imple
 
 	@Override
 	public boolean canEncode(ResolvableType elementType, @Nullable MimeType mimeType) {
-		Class<?> clazz = elementType.resolve(Object.class);
+		Class<?> clazz = elementType.toClass();
 		return supportsMimeType(mimeType) && (Object.class == clazz ||
 				(!String.class.isAssignableFrom(elementType.resolve(clazz)) && getObjectMapper().canSerialize(clazz)));
 	}
@@ -141,9 +141,8 @@ public abstract class AbstractJackson2Encoder extends Jackson2CodecSupport imple
 	private DataBuffer encodeValue(Object value, @Nullable MimeType mimeType, DataBufferFactory bufferFactory,
 			ResolvableType elementType, @Nullable Map<String, Object> hints, JsonEncoding encoding) {
 
-		Log logger = getLogger(hints);
-		if (logger.isDebugEnabled()) {
-			logger.debug("Encoding [" + value + "]");
+		if (logger.isDebugEnabled() && !Hints.isLoggingSuppressed(hints)) {
+			logger.debug(Hints.getLogPrefix(hints) + "Encoding [" + value + "]");
 		}
 
 		JavaType javaType = getJavaType(elementType.getType(), null);
@@ -218,7 +217,7 @@ public abstract class AbstractJackson2Encoder extends Jackson2CodecSupport imple
 	public Map<String, Object> getEncodeHints(@Nullable ResolvableType actualType, ResolvableType elementType,
 			@Nullable MediaType mediaType, ServerHttpRequest request, ServerHttpResponse response) {
 
-		return (actualType != null ? getHints(actualType) : Collections.emptyMap());
+		return (actualType != null ? getHints(actualType) : Hints.none());
 	}
 
 	// Jackson2CodecSupport ...
